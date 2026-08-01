@@ -1,0 +1,121 @@
+# ==========================================
+# Production GitIgnore - PromptToWeb AI
+# ==========================================
+
+# ------------------------------------------
+# Environment & Secret Files
+# ------------------------------------------
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.env
+!.env.example
+!.env.*.example
+
+# ------------------------------------------
+# Node.js & Package Managers
+# ------------------------------------------
+node_modules/
+**/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.pnpm-debug.log*
+package-lock.json.bak
+
+# ------------------------------------------
+# Next.js & Frontend Build Outputs
+# ------------------------------------------
+.next/
+**/.next/
+out/
+build/
+dist/
+.vercel
+*.tsbuildinfo
+next-env.d.ts
+
+# ------------------------------------------
+# Python & Virtual Environments
+# ------------------------------------------
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+__pycache__/
+/**/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ------------------------------------------
+# Generated Agent Sessions & Workspace Temp Files
+# ------------------------------------------
+workspace/session_*
+workspace/test_*
+workspace/*.zip
+# Ignore temporary direct workspace outputs while keeping workspace directory
+workspace/*.html
+workspace/*.css
+workspace/*.js
+!workspace/registry.json
+!workspace/.gitkeep
+
+# ------------------------------------------
+# Operating System & Editor Files
+# ------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# IDE & Editor Settings
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ------------------------------------------
+# Logs and Archives
+# ------------------------------------------
+logs/
+*.log
+*.zip
+*.tar.gz
+*.tgz
