@@ -1,0 +1,55 @@
+[
+  {
+    "sessionId": "session_1785608193009",
+    "timestamp": "2026-08-01T18:16:33.027Z",
+    "status": "delivered",
+    "filesCount": 4,
+    "prompt": "create a proffesional expense tracker app for managing expenses which support resposiveness , all CRUD operations",
+    "clientIp": "127.0.0.1",
+    "updatedAt": "2026-08-01T18:20:40.410Z"
+  },
+  {
+    "sessionId": "session_1785608056060",
+    "timestamp": "2026-08-01T18:14:16.060Z",
+    "status": "failed",
+    "filesCount": 0,
+    "prompt": "create a todo app",
+    "clientIp": "127.0.0.1",
+    "updatedAt": "2026-08-01T18:14:43.051Z"
+  },
+  {
+    "sessionId": "session_1785608017374",
+    "timestamp": "2026-08-01T18:13:37.395Z",
+    "status": "failed",
+    "filesCount": 0,
+    "prompt": "create a proffesional expense tracker app for managing expenses which support resposiveness , all CRUD operations",
+    "clientIp": "127.0.0.1",
+    "updatedAt": "2026-08-01T18:14:04.911Z"
+  },
+  {
+    "sessionId": "session_1785607975843",
+    "timestamp": "2026-08-01T18:12:55.864Z",
+    "status": "in_progress",
+    "filesCount": 0,
+    "prompt": "create a proffesional expense tracker app for managing expenses which support resposiveness , all CRUD operations",
+    "clientIp": "127.0.0.1"
+  },
+  {
+    "sessionId": "session_1785607864098",
+    "timestamp": "2026-08-01T18:11:04.107Z",
+    "status": "failed",
+    "filesCount": 0,
+    "prompt": "create a expense tracker with responsive UI and all CRUD operations",
+    "clientIp": "127.0.0.1",
+    "updatedAt": "2026-08-01T18:11:05.614Z"
+  },
+  {
+    "sessionId": "session_1785607824263",
+    "timestamp": "2026-08-01T18:10:24.286Z",
+    "status": "failed",
+    "filesCount": 0,
+    "prompt": "create a expense tracker with responsive UI and all CRUD operations",
+    "clientIp": "127.0.0.1",
+    "updatedAt": "2026-08-01T18:10:26.451Z"
+  }
+]
