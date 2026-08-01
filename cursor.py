@@ -18,12 +18,20 @@ parser.add_argument("--model", type=str, default=None, help="Specific Gemini mod
 parser.add_argument("--json-stream", action="store_true", help="Stream JSON lines to stdout for IPC / Express API")
 args = parser.parse_args()
 
+import tempfile
+
 # Workspace setup
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-if args.session:
-    WORKSPACE_DIR = os.path.abspath(os.path.join(BASE_DIR, "workspace", args.session))
+if os.environ.get("VERCEL") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
+    BASE_WORKSPACE_DIR = os.path.join(tempfile.gettempdir(), "workspace")
 else:
-    WORKSPACE_DIR = os.path.join(BASE_DIR, "workspace")
+    BASE_WORKSPACE_DIR = os.path.join(BASE_DIR, "workspace")
+
+if args.session:
+    WORKSPACE_DIR = os.path.abspath(os.path.join(BASE_WORKSPACE_DIR, args.session))
+else:
+    WORKSPACE_DIR = BASE_WORKSPACE_DIR
+
 os.makedirs(WORKSPACE_DIR, exist_ok=True)
 
 # Client configuration

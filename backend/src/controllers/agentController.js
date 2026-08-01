@@ -1,12 +1,22 @@
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const archiver = require('archiver');
 const { v4: uuidv4 } = require('uuid');
 
 const PROJECT_ROOT = path.resolve(__dirname, '../../..');
 const CURSOR_SCRIPT = path.join(PROJECT_ROOT, 'cursor.py');
-const REGISTRY_FILE = path.join(PROJECT_ROOT, 'workspace', 'registry.json');
+
+// Dynamic workspace directory for Serverless (Vercel/Lambda) vs Local Environment
+const getWorkspaceBaseDir = () => {
+    if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
+        return path.join(os.tmpdir(), 'workspace');
+    }
+    return path.join(PROJECT_ROOT, 'workspace');
+};
+
+const getRegistryFilePath = () => path.join(getWorkspaceBaseDir(), 'registry.json');
 
 // Find virtualenv python executable if available
 const venvPythonWin = path.join(PROJECT_ROOT, 'venv', 'Scripts', 'python.exe');
@@ -26,8 +36,9 @@ const getClientIp = (req) => {
 // Session Registry helpers
 const getRegistry = () => {
     try {
-        if (fs.existsSync(REGISTRY_FILE)) {
-            return JSON.parse(fs.readFileSync(REGISTRY_FILE, 'utf-8'));
+        const regFile = getRegistryFilePath();
+        if (fs.existsSync(regFile)) {
+            return JSON.parse(fs.readFileSync(regFile, 'utf-8'));
         }
     } catch (e) {
         console.error('[Registry Read Error]:', e);
@@ -37,9 +48,9 @@ const getRegistry = () => {
 
 const saveRegistry = (registry) => {
     try {
-        const workspaceDir = path.join(PROJECT_ROOT, 'workspace');
-        if (!fs.existsSync(workspaceDir)) fs.mkdirSync(workspaceDir, { recursive: true });
-        fs.writeFileSync(REGISTRY_FILE, JSON.stringify(registry, null, 2), 'utf-8');
+        const baseDir = getWorkspaceBaseDir();
+        if (!fs.existsSync(baseDir)) fs.mkdirSync(baseDir, { recursive: true });
+        fs.writeFileSync(getRegistryFilePath(), JSON.stringify(registry, null, 2), 'utf-8');
     } catch (e) {
         console.error('[Registry Save Error]:', e);
     }
@@ -71,7 +82,7 @@ const generateStream = (req, res) => {
 
     const sessionId = userSessionId || uuidv4();
     const clientIp = getClientIp(req);
-    const workspaceDir = path.join(PROJECT_ROOT, 'workspace', sessionId);
+    const workspaceDir = path.join(getWorkspaceBaseDir(), sessionId);
 
     // Register session
     updateSessionInRegistry(sessionId, {
@@ -81,7 +92,7 @@ const generateStream = (req, res) => {
         filesCount: 0
     });
 
-    // Ensure session workspace folder exists
+    // Ensure session workspace folder exists inside writable directory (/tmp on Vercel)
     fs.mkdirSync(workspaceDir, { recursive: true });
 
     // Prepare SSE headers
@@ -195,9 +206,9 @@ const getSessionsList = (req, res) => {
 // 3. Get Workspace Files Controller
 const getWorkspaceFiles = (req, res) => {
     const { sessionId } = req.params;
-    let targetDir = path.join(PROJECT_ROOT, 'workspace');
+    let targetDir = getWorkspaceBaseDir();
     if (sessionId && sessionId !== 'default') {
-        targetDir = path.join(PROJECT_ROOT, 'workspace', sessionId);
+        targetDir = path.join(getWorkspaceBaseDir(), sessionId);
     }
 
     if (!fs.existsSync(targetDir)) {
@@ -231,9 +242,9 @@ const getWorkspaceFiles = (req, res) => {
 // 4. Download Zip Controller
 const downloadZip = (req, res) => {
     const { sessionId } = req.params;
-    let targetDir = path.join(PROJECT_ROOT, 'workspace');
+    let targetDir = getWorkspaceBaseDir();
     if (sessionId && sessionId !== 'default') {
-        targetDir = path.join(PROJECT_ROOT, 'workspace', sessionId);
+        targetDir = path.join(getWorkspaceBaseDir(), sessionId);
     }
 
     if (!fs.existsSync(targetDir)) {
