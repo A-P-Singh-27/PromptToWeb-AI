@@ -2,6 +2,7 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const https = require('https');
 const archiver = require('archiver');
 const { v4: uuidv4 } = require('uuid');
 
@@ -25,6 +26,19 @@ const venvPythonLinux = path.join(PROJECT_ROOT, 'venv', 'bin', 'python');
 const getPythonExecutable = () => {
     if (fs.existsSync(venvPythonWin)) return venvPythonWin;
     if (fs.existsSync(venvPythonLinux)) return venvPythonLinux;
+    
+    const linuxCandidates = [
+        '/usr/bin/python3',
+        '/usr/local/bin/python3',
+        '/var/lang/bin/python3',
+        'python3',
+        'python'
+    ];
+    for (const cand of linuxCandidates) {
+        try {
+            if (fs.existsSync(cand)) return cand;
+        } catch (e) {}
+    }
     return process.platform === 'win32' ? 'python' : 'python3';
 };
 
@@ -73,7 +87,232 @@ const updateSessionInRegistry = (sessionId, data) => {
     saveRegistry(registry);
 };
 
-// 1. SSE Stream Controller: Spawns cursor.py and streams JSON events live
+// Native Node.js ReAct Agent Fallback for Vercel Serverless Function Environments
+const callGeminiOpenAiApi = (messages, userApiKey, userModel) => {
+    return new Promise((resolve, reject) => {
+        const apiKey = userApiKey || process.env.GEMINI_API_KEY;
+        const targetModel = userModel || 'gemini-2.0-flash';
+
+        if (!apiKey) {
+            return reject(new Error('GEMINI_API_KEY is not configured in server environment or request headers.'));
+        }
+
+        const payload = JSON.stringify({
+            model: targetModel,
+            response_format: { type: "json_object" },
+            messages
+        });
+
+        const reqOptions = {
+            hostname: 'generativelanguage.googleapis.com',
+            port: 443,
+            path: `/v1beta/openai/chat/completions`,
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Length': Buffer.byteLength(payload)
+            }
+        };
+
+        const req = https.request(reqOptions, (res) => {
+            let body = '';
+            res.on('data', chunk => body += chunk);
+            res.on('end', () => {
+                if (res.statusCode >= 200 && res.statusCode < 300) {
+                    try {
+                        const parsed = JSON.parse(body);
+                        resolve(parsed);
+                    } catch (e) {
+                        reject(new Error(`Invalid API JSON response: ${body}`));
+                    }
+                } else {
+                    reject(new Error(`API HTTP Error ${res.statusCode}: ${body}`));
+                }
+            });
+        });
+
+        req.on('error', err => reject(err));
+        req.write(payload);
+        req.end();
+    });
+};
+
+const runNativeJsAgentLoop = async (req, res, { prompt, sessionId, workspaceDir, apiKey, model }) => {
+    console.log(`[AgentController] Running Native JS ReAct Agent Fallback for session ${sessionId}...`);
+
+    const systemPrompt = `
+You are an expert AI Coding Agent specialized in building web applications and software projects locally.
+You operate in an autonomous loop: plan -> action -> observe -> output.
+
+Environment & Setup:
+- Default Workspace Path: ${workspaceDir}
+- All generated code files MUST be written into the workspace directory using the write_file tool.
+
+Guidelines for Web Projects (HTML, CSS, JS):
+1. Create modern, beautiful, responsive, accessible, and error-free applications.
+2. Modularize files clearly:
+   - index.html (Semantic structure, UTF-8 charset, viewport meta tag, linked CSS/JS).
+   - style.css (Clean CSS with color variables, flex/grid layouts, hover effects, mobile media queries).
+   - app.js (Robust JavaScript with event listeners, state management, full CRUD operations, and localStorage persistence).
+3. When writing code via write_file, provide COMPLETE code without placeholders or comments like '// rest of code...'.
+
+JSON Output Rules:
+Respond STRICTLY with a single valid JSON object adhering to one of these formats:
+
+Plan step:
+{
+    "step": "plan",
+    "content": "Step-by-step description of what you plan to do"
+}
+
+Action step:
+{
+    "step": "action",
+    "function": "write_file",
+    "input": {
+        "filepath": "index.html",
+        "content": "<!DOCTYPE html>..."
+    }
+}
+
+Output step (when finished):
+{
+    "step": "output",
+    "content": "User summary message explaining the created application, file locations in workspace, and how to view it."
+}
+`;
+
+    const messages = [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: prompt }
+    ];
+
+    let filesCount = 0;
+
+    try {
+        while (true) {
+            if (res.writableEnded) break;
+
+            res.write(`data: ${JSON.stringify({ 
+                type: 'status', 
+                state: 'thinking', 
+                message: "🧠 Brain Thinking: Reasoning & analyzing request with Gemini AI API..." 
+            })}\n\n`);
+
+            let apiResponse;
+            try {
+                apiResponse = await callGeminiOpenAiApi(messages, apiKey, model);
+            } catch (err) {
+                console.error('[Native JS Agent Error]:', err);
+                res.write(`data: ${JSON.stringify({ type: 'error', message: err.message })}\n\n`);
+                updateSessionInRegistry(sessionId, { status: 'failed', error: err.message });
+                res.end();
+                return;
+            }
+
+            const rawContent = apiResponse.choices[0].message.content;
+            let parsed;
+            try {
+                parsed = JSON.parse(rawContent);
+            } catch (e) {
+                messages.append({ role: "user", content: "Your previous output was not valid JSON. Please reply strictly in JSON format." });
+                continue;
+            }
+
+            const step = parsed.step;
+
+            if (step === 'plan') {
+                const planContent = parsed.content;
+                res.write(`data: ${JSON.stringify({
+                    type: 'plan',
+                    state: 'planning',
+                    content: planContent,
+                    message: `📋 Planning Architecture: ${planContent.slice(0, 100)}...`
+                })}\n\n`);
+                messages.push({ role: "assistant", content: JSON.stringify(parsed) });
+                continue;
+            }
+
+            if (step === 'action') {
+                const fnName = parsed.function;
+                const toolInput = parsed.input;
+                const filepath = toolInput?.filepath || 'file';
+                const fileContent = toolInput?.content || '';
+
+                let state = 'executing';
+                let stateMsg = `⚙️ Executing tool '${fnName}'...`;
+
+                if (filepath.endsWith('.js')) {
+                    state = 'writing_js';
+                    stateMsg = `✏️ Writing JavaScript Logic: Crafting workspace/${filepath} (CRUD & interactivity)...`;
+                } else if (filepath.endsWith('.html')) {
+                    state = 'writing_html';
+                    stateMsg = `📝 Writing HTML Structure: Crafting workspace/${filepath} (UI markup & layout)...`;
+                } else if (filepath.endsWith('.css')) {
+                    state = 'writing_css';
+                    stateMsg = `🎨 Writing CSS Styling: Crafting workspace/${filepath} (styling & responsive design)...`;
+                }
+
+                res.write(`data: ${JSON.stringify({
+                    type: 'action',
+                    state,
+                    function: fnName,
+                    input: toolInput,
+                    message: stateMsg,
+                    targetFile: filepath
+                })}\n\n`);
+
+                messages.push({ role: "assistant", content: JSON.stringify(parsed) });
+
+                let obsOutput = '';
+                if (fnName === 'write_file') {
+                    try {
+                        const targetPath = path.join(workspaceDir, filepath);
+                        fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+                        fs.writeFileSync(targetPath, fileContent, 'utf-8');
+
+                        filesCount++;
+                        updateSessionInRegistry(sessionId, { filesCount });
+                        const lines = fileContent.split('\n').length;
+                        res.write(`data: ${JSON.stringify({ type: 'file_created', filepath, lines })}\n\n`);
+                        obsOutput = `File '${filepath}' successfully created/updated in workspace (${lines} lines).`;
+                    } catch (err) {
+                        obsOutput = `Error writing file '${filepath}': ${err.message}`;
+                    }
+                } else {
+                    obsOutput = `Tool '${fnName}' executed.`;
+                }
+
+                res.write(`data: ${JSON.stringify({ type: 'observation', output: obsOutput })}\n\n`);
+                messages.push({ role: "assistant", content: JSON.stringify({ step: "observe", output: obsOutput }) });
+                continue;
+            }
+
+            if (step === 'output') {
+                const outputText = parsed.content;
+                updateSessionInRegistry(sessionId, { status: 'delivered', filesCount });
+                res.write(`data: ${JSON.stringify({
+                    type: 'output',
+                    state: 'completed',
+                    content: outputText,
+                    message: "🎉 Build Completed: All application files generated and ready!"
+                })}\n\n`);
+                res.write(`data: ${JSON.stringify({ type: 'done', code: 0, sessionId })}\n\n`);
+                res.end();
+                break;
+            }
+        }
+    } catch (e) {
+        console.error('[Native JS Agent Exception]:', e);
+        if (!res.writableEnded) {
+            res.write(`data: ${JSON.stringify({ type: 'error', message: e.message })}\n\n`);
+            res.end();
+        }
+    }
+};
+
+// 1. SSE Stream Controller: Spawns cursor.py or activates Native JS Agent Fallback
 const generateStream = (req, res) => {
     const { prompt, sessionId: userSessionId, apiKey, model } = req.body;
     if (!prompt) {
@@ -125,13 +364,20 @@ const generateStream = (req, res) => {
         envVars.GEMINI_API_KEY = apiKey.trim();
     }
 
-    const pythonProcess = spawn(pythonCmd, args, {
-        cwd: PROJECT_ROOT,
-        env: envVars
-    });
+    let pythonProcess;
+    try {
+        pythonProcess = spawn(pythonCmd, args, {
+            cwd: PROJECT_ROOT,
+            env: envVars
+        });
+    } catch (spawnErr) {
+        console.warn('[AgentController] Direct spawn exception, using Native JS Agent Fallback:', spawnErr.message);
+        return runNativeJsAgentLoop(req, res, { prompt, sessionId, workspaceDir, apiKey, model });
+    }
 
     let stdoutBuffer = '';
     let filesCount = 0;
+    let fallbackActivated = false;
 
     pythonProcess.stdout.on('data', (data) => {
         stdoutBuffer += data.toString('utf-8');
@@ -167,24 +413,30 @@ const generateStream = (req, res) => {
 
     pythonProcess.on('close', (code, signal) => {
         console.log(`[AgentController] Python process finished (Code: ${code}, Signal: ${signal || 'none'})`);
-        updateSessionInRegistry(sessionId, { status: code === 0 ? 'delivered' : 'failed' });
-        if (!res.writableEnded) {
-            res.write(`data: ${JSON.stringify({ type: 'done', code, signal, sessionId })}\n\n`);
-            res.end();
+        if (!fallbackActivated) {
+            updateSessionInRegistry(sessionId, { status: code === 0 ? 'delivered' : 'failed' });
+            if (!res.writableEnded) {
+                res.write(`data: ${JSON.stringify({ type: 'done', code, signal, sessionId })}\n\n`);
+                res.end();
+            }
         }
     });
 
     pythonProcess.on('error', (err) => {
-        console.error('[AgentController] Process spawn error:', err);
-        updateSessionInRegistry(sessionId, { status: 'failed', error: err.message });
-        if (!res.writableEnded) {
+        console.error('[AgentController] Process spawn error:', err.message);
+        if (err.code === 'ENOENT' && !fallbackActivated) {
+            fallbackActivated = true;
+            console.log('[AgentController] Python binary missing in Vercel serverless environment. Activating Native JS Agent Fallback...');
+            runNativeJsAgentLoop(req, res, { prompt, sessionId, workspaceDir, apiKey, model });
+        } else if (!res.writableEnded) {
+            updateSessionInRegistry(sessionId, { status: 'failed', error: err.message });
             res.write(`data: ${JSON.stringify({ type: 'error', message: err.message })}\n\n`);
             res.end();
         }
     });
 
     req.on('close', () => {
-        if (!pythonProcess.killed && pythonProcess.exitCode === null) {
+        if (pythonProcess && !pythonProcess.killed && pythonProcess.exitCode === null) {
             console.log(`[AgentController] Stream connection closed by client for session ${sessionId}`);
         }
     });
