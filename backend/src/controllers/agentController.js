@@ -88,54 +88,112 @@ const updateSessionInRegistry = (sessionId, data) => {
 };
 
 // Native Node.js ReAct Agent Fallback for Vercel Serverless Function Environments
-const callGeminiOpenAiApi = (messages, userApiKey, userModel) => {
-    return new Promise((resolve, reject) => {
-        const apiKey = userApiKey || process.env.GEMINI_API_KEY;
-        const targetModel = userModel || 'gemini-2.0-flash';
+const BASE_NATIVE_MODELS = ['gemini-3.5-flash'];
 
-        if (!apiKey) {
-            return reject(new Error('GEMINI_API_KEY is not configured in server environment or request headers.'));
-        }
+const callGeminiOpenAiApiWithRetry = async (messages, userApiKey, userModel, sseRes, maxRetriesPerModel = 3) => {
+    const apiKey = userApiKey || process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+        throw new Error('GEMINI_API_KEY is not configured in server environment or Settings tab.');
+    }
 
-        const payload = JSON.stringify({
-            model: targetModel,
-            response_format: { type: "json_object" },
-            messages
-        });
+    let modelList = [...BASE_NATIVE_MODELS];
+    if (userModel && userModel.trim()) {
+        const target = userModel.trim();
+        modelList = [target, ...BASE_NATIVE_MODELS.filter(m => m !== target)];
+    }
 
-        const reqOptions = {
-            hostname: 'generativelanguage.googleapis.com',
-            port: 443,
-            path: `/v1beta/openai/chat/completions`,
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${apiKey}`,
-                'Content-Length': Buffer.byteLength(payload)
-            }
-        };
+    let lastError = null;
 
-        const req = https.request(reqOptions, (res) => {
-            let body = '';
-            res.on('data', chunk => body += chunk);
-            res.on('end', () => {
-                if (res.statusCode >= 200 && res.statusCode < 300) {
-                    try {
-                        const parsed = JSON.parse(body);
-                        resolve(parsed);
-                    } catch (e) {
-                        reject(new Error(`Invalid API JSON response: ${body}`));
-                    }
-                } else {
-                    reject(new Error(`API HTTP Error ${res.statusCode}: ${body}`));
+    for (const targetModel of modelList) {
+        for (let attempt = 1; attempt <= maxRetriesPerModel; attempt++) {
+            try {
+                if (sseRes && !sseRes.writableEnded) {
+                    sseRes.write(`data: ${JSON.stringify({ 
+                        type: 'status', 
+                        state: 'thinking', 
+                        message: `🧠 Brain Thinking: Analyzing request with model '${targetModel}'...` 
+                    })}\n\n`);
                 }
-            });
-        });
 
-        req.on('error', err => reject(err));
-        req.write(payload);
-        req.end();
-    });
+                const result = await new Promise((resolve, reject) => {
+                    const payload = JSON.stringify({
+                        model: targetModel,
+                        response_format: { type: "json_object" },
+                        messages
+                    });
+
+                    const reqOptions = {
+                        hostname: 'generativelanguage.googleapis.com',
+                        port: 443,
+                        path: `/v1beta/openai/chat/completions`,
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${apiKey}`,
+                            'Content-Length': Buffer.byteLength(payload)
+                        }
+                    };
+
+                    const req = https.request(reqOptions, (res) => {
+                        let body = '';
+                        res.on('data', chunk => body += chunk);
+                        res.on('end', () => {
+                            if (res.statusCode >= 200 && res.statusCode < 300) {
+                                try {
+                                    resolve(JSON.parse(body));
+                                } catch (e) {
+                                    reject(new Error(`Invalid JSON response from model '${targetModel}': ${body}`));
+                                }
+                            } else {
+                                const errObj = new Error(`API HTTP Error ${res.statusCode}: ${body}`);
+                                errObj.statusCode = res.statusCode;
+                                errObj.responseBody = body;
+                                reject(errObj);
+                            }
+                        });
+                    });
+
+                    req.on('error', err => reject(err));
+                    req.write(payload);
+                    req.end();
+                });
+
+                return result; // Successful response!
+            } catch (err) {
+                lastError = err;
+                const errStr = String(err.responseBody || err.message || '');
+                const is429 = err.statusCode === 429 || errStr.includes('429') || errStr.includes('RESOURCE_EXHAUSTED');
+                const is404 = err.statusCode === 404 || errStr.includes('404') || errStr.includes('NOT_FOUND');
+
+                if (is429) {
+                    const waitSec = attempt * 3;
+                    console.warn(`[AgentController] Rate limit 429 on '${targetModel}'. Retrying in ${waitSec}s (Attempt ${attempt}/${maxRetriesPerModel})...`);
+                    if (sseRes && !sseRes.writableEnded) {
+                        sseRes.write(`data: ${JSON.stringify({ 
+                            type: 'status', 
+                            state: 'rate_limit', 
+                            message: `⏳ Free tier rate limit reached on '${targetModel}'. Auto-retrying in ${waitSec}s (Attempt ${attempt}/${maxRetriesPerModel})...` 
+                        })}\n\n`);
+                    }
+                    await new Promise(r => setTimeout(r, waitSec * 1000));
+                } else if (is404) {
+                    console.warn(`[AgentController] Model '${targetModel}' not available (404). Switching to fallback model...`);
+                    if (sseRes && !sseRes.writableEnded) {
+                        sseRes.write(`data: ${JSON.stringify({ 
+                            type: 'status', 
+                            state: 'fallback', 
+                            message: `🔄 Model '${targetModel}' unavailable. Switching to fallback model...` 
+                        })}\n\n`);
+                    }
+                    break; // Break inner retry loop to try next model in modelList
+                } else {
+                    throw err; // Non-retryable error
+                }
+            }
+        }
+    }
+
+    throw new Error(`Google AI Studio Free Tier Quota Exceeded on models. Please try again in a moment or enter your personal API Key in Settings. Details: ${lastError?.message || lastError}`);
 };
 
 const runNativeJsAgentLoop = async (req, res, { prompt, sessionId, workspaceDir, apiKey, model }) => {
@@ -194,15 +252,9 @@ Output step (when finished):
         while (true) {
             if (res.writableEnded) break;
 
-            res.write(`data: ${JSON.stringify({ 
-                type: 'status', 
-                state: 'thinking', 
-                message: "🧠 Brain Thinking: Reasoning & analyzing request with Gemini AI API..." 
-            })}\n\n`);
-
             let apiResponse;
             try {
-                apiResponse = await callGeminiOpenAiApi(messages, apiKey, model);
+                apiResponse = await callGeminiOpenAiApiWithRetry(messages, apiKey, model, res);
             } catch (err) {
                 console.error('[Native JS Agent Error]:', err);
                 res.write(`data: ${JSON.stringify({ type: 'error', message: err.message })}\n\n`);
@@ -216,7 +268,7 @@ Output step (when finished):
             try {
                 parsed = JSON.parse(rawContent);
             } catch (e) {
-                messages.append({ role: "user", content: "Your previous output was not valid JSON. Please reply strictly in JSON format." });
+                messages.push({ role: "user", content: "Your previous output was not valid JSON. Please reply strictly in JSON format." });
                 continue;
             }
 
